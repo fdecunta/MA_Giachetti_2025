@@ -1,0 +1,549 @@
+---
+title: "6_Re-analysis with bare soil nutrients data"
+author: "V. Giachetti and F. Decunta"
+date: "2025-08-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(metafor)
+library(patchwork)
+library(tidyverse)
+```
+
+# Load Data
+
+For the new sensitivity analysis, we need to create a new data frame that contains
+the old data and the effect sizes and the bare soil nutrients data.
+
+## Read processed data
+
+Read data that includes effect sizes.
+
+```{r}
+dat <- read_csv("../data/Giachetti_2025_processed.csv", show_col_types = FALSE)
+```
+
+## Merge with bar soil nutrients data
+
+To check the ecosystem fertility level we used the bare soil nutrients data from the original data set.
+
+But before that we have to homogenize the units of the nutrients data, as there are different forms and units.
+
+We havent'd done that before because we used RII as effect size, which is unit less. 
+
+--- 
+
+NOTE: There was a problem with the CSV file that has the units. The use of different decimal
+separator (point or comma) changed some values. 
+
+Because of that, here we add the units to the Giachetti_2025_raw data, and then
+merge that with the processed data frame that contains the effect sizes.
+
+
+```{r}
+# Load the original raw data
+raw_data <- read_csv("../data/Giachetti_2025_raw.csv", show_col_types = FALSE)
+
+# Use the same pre-process steps as in the original data set
+raw_data %>% 
+  filter(nurse_species == "unknown" | nurse_species == "various") 
+
+# 7 observations were removed, same as in the original dataset.
+raw_data <- raw_data %>%  
+  filter(nurse_species != "unknown", nurse_species != "various")
+
+# Create and effect size ID, same as in the original dataset.
+raw_data <- raw_data %>% 
+  mutate(id_es = row_number())
+```
+
+
+
+```{r}
+# Load raw nutrients data with nutrients units
+units_df <- read_csv("../data/Giachetti_2025_raw_nutrients_units.csv", show_col_types = FALSE)
+
+# Use the same pre-process steps as in the original dataset
+units_df %>% 
+  filter(nurse_species == "unknown" | nurse_species == "various")
+
+# 7 observations were removed, same as in the original dataset.
+units_df <- units_df %>%  
+  filter(nurse_species != "unknown", nurse_species != "various")
+
+# Create and effect size ID, same as in the original dataset.
+units_df <- units_df %>% 
+  mutate(id_es = row_number())
+```
+
+
+We don't need all the columns from the raw nutrients data, so we will select only the necessary ones.
+
+```{r}
+columns_to_keep <- c(
+  "nit_unidades",
+  "nit__forma",
+  "p_unidades",
+  "p_forma"
+)
+
+units_df <- units_df %>%
+  select(id_es, all_of(columns_to_keep))
+```
+
+Join the raw data with the nutrients data to have all the information in one data frame.
+
+Then select only the useful columns.
+
+```{r}
+units_raw <- raw_data %>%
+  left_join(units_df, by = "id_es")
+```
+
+```{r}
+usefull_cols <- c(
+  "id_es",
+  "nit_unidades",
+  "nit__forma",
+  "mean_bs_nit",
+  "p_unidades",
+  "p_forma",
+  "mean_bs_p"
+)
+
+units_raw <- units_raw %>% 
+  select(all_of(usefull_cols))
+```
+
+
+## Merge with the processed data
+
+
+```{r}
+full_data <- dat %>%
+  left_join(units_raw, by = "id_es")
+```
+
+Great. Now let's do the analysis.
+
+---
+
+# Ecosystem-level Nitrogen
+
+We will use the bare soil nitrogen data to check if it gives us the same result
+than ecosystem fertility level.
+
+
+But not all the data, as there are different nitrogen forms and units.
+
+
+```{r}
+dat_nit <- filter(full_data, nit__forma == "total_nit") %>% 
+  filter(!is.na(mean_bs_nit)) %>%
+  filter(!is.na(RIIV))
+```
+
+
+Once we have total nitrogen only, we need to homogenize the units.
+
+There are three types here:
+- percentages
+- g/kg (or mg/g, which is the same)
+- mg/kg ---> However this is a mistake. Checked the paper and it's mg/g (Table 1)
+
+
+```{r}
+unique(dat_nit$nit_unidades)
+```
+
+
+
+```{r}
+# Homogenize the units of the nutrients data
+dat_nit <- dat_nit %>% 
+  mutate(
+    mean_bs_nit = case_when(
+      nit_unidades == "%" ~ mean_bs_nit * 100,
+      TRUE ~ mean_bs_nit
+    )
+  )
+```
+
+Take a look at the values for bare soil
+
+```{r}
+hist(dat_nit$mean_bs_nit)
+```
+
+There are two observations that are clear outliers, so we will remove them for the analysis.
+
+```{r}
+dat_nit <- dat_nit %>% 
+  filter(mean_bs_nit < 40) %>% 
+  distinct()
+```
+
+### Analysis with Total Nitrogen from bare soil
+
+```{r}
+VCV_nit <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat_nit,
+             rho = 0.5)
+```
+
+
+```{r}
+mod_nitRII <- rma.mv(yi = RII,
+                     V = VCV_nit,
+                     random = list(~ 1 | id_es,
+                                   ~ 1 | id_paper),
+                     method = "REML",
+                     data = dat_nit,
+                     test = "t",
+                     mods = ~ mean_bs_nit)
+```
+
+
+```{r}
+rob_mod_nitRII <- robust(mod_nitRII, cluster = dat_nit$id_paper)
+rob_mod_nitRII
+```
+
+```{r}
+nit_bs_plot <- dat_nit %>% 
+  ggplot(aes(x = mean_bs_nit, y = RII)) +
+  geom_point(size = 2, alpha = 0.5, color = "darkorange") +
+  labs(x = "Bare soil nitrogen (g/kg)",
+       y = "") +
+  theme_minimal() +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  theme(axis.title.x = element_text(margin = margin(t = 10)),
+        axis.title.y = element_text(margin = margin(r = 10))) +
+  theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  annotate("text", x = 10, y = 0.90, label = "n.s.", size = 3.5) +
+  scale_y_continuous(limits = c(-1, 1))
+
+
+nit_bs_plot
+```
+
+---
+
+
+# Ecosystem-level Phosphorus
+
+For the case of phosphorus, we only use available phosphorus, which is the same
+than the P Olsen database used in the manuscript.
+
+```{r}
+phosp_data <- full_data %>%
+  filter(!is.na(mean_bs_p)) %>%
+  filter(!is.na(RII)) %>% 
+  distinct()
+```
+
+
+
+```{r}
+unique(phosp_data$p_forma)
+```
+
+```{r}
+table(phosp_data$p_forma)
+```
+
+Okay, we are going to use available_p and total_p for two separated
+sensitivity analyses.
+
+
+#### Available P
+
+```{r}
+dat_available_p <- phosp_data %>%
+  filter(p_forma == "available_p")
+```
+
+
+```{r}
+unique(dat_available_p$p_unidades)
+```
+
+We are moving all of them to mg/kg.
+
+```{r}
+# Homogenize the units of the nutrients data
+dat_available_p <- dat_available_p %>% 
+  mutate(
+    mean_bs_p = case_when(
+      p_unidades == "mg/100 g" ~ mean_bs_p * 10,
+      p_unidades == "mg/g" ~ mean_bs_p * 1000,
+      TRUE ~ mean_bs_p
+    )
+  )
+```
+
+
+```{r}
+hist(dat_available_p$mean_bs_p)
+```
+
+There is one outlier in paper 31. We think that there was a mistake in how they inform the units.
+
+For the sensitivity analysis, we remove that observation.
+
+```{r}
+dat_available_p <- dat_available_p %>%
+  filter(id_paper != 31)
+```
+
+
+```{r}
+VCV_av_p <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat_available_p,
+             rho = 0.5)
+```
+
+
+```{r}
+mod_av_p <- rma.mv(yi = RII,
+                   V = VCV_av_p,
+                   random = list(~ 1 | id_es,
+                                 ~ 1 | id_paper),
+                   method = "REML",
+                   data = dat_available_p,
+                   test = "t",
+                   mods = ~ mean_bs_p)
+```
+
+```{r}
+robust(mod_av_p, cluster = dat_available_p$id_paper)
+```
+
+
+
+```{r}
+available_p_plot <- dat_available_p %>% 
+  ggplot(aes(x = mean_bs_p, y = RII)) +
+  geom_point(size = 2, color = "darkorchid") +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  theme_minimal() +
+  labs(x = "Soil Available Phosphorus (mg/kg)",
+       y = "Plant facilitation (RII)") + 
+  theme(axis.title.x = element_text(margin = margin(t = 10)),
+        axis.title.y = element_text(margin = margin(r = 10))) +
+  theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  annotate("text", x = 25, y = 0.85, label = "n.s.", size = 3.5) +
+  scale_y_continuous(limits = c(-1, 1))
+
+
+available_p_plot
+```
+
+### Total P
+
+
+```{r}
+dat_total_p <- phosp_data %>%
+  filter(p_forma == "total_p") 
+```
+
+
+```{r}
+unique(dat_total_p$p_unidades)
+```
+
+
+```{r}
+# Homogenize the units of the nutrients data
+dat_total_p <- dat_total_p %>% 
+  mutate(
+    mean_bs_p = case_when(
+      p_unidades == "mg/kg" ~ mean_bs_p / 1000,
+      p_unidades == "ppm" ~ mean_bs_p / 1000,
+      TRUE ~ mean_bs_p
+    )
+  )
+```
+
+
+```{r}
+hist(dat_total_p$mean_bs_p)
+```
+
+
+```{r}
+VCV_tot_p <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat_total_p,
+             rho = 0.5)
+```
+
+
+```{r}
+mod_tot_p <- rma.mv(yi = RII,
+                   V = VCV_tot_p,
+                   random = list(~ 1 | id_es,
+                                 ~ 1 | id_paper),
+                   method = "REML",
+                   data = dat_total_p,
+                   test = "t",
+                   mods = ~ mean_bs_p)
+```
+
+```{r}
+robust(mod_tot_p, cluster = dat_total_p$id_paper)
+```
+
+
+
+```{r}
+total_p_plot <- dat_total_p %>% 
+  ggplot(aes(x = mean_bs_p, y = RII)) +
+  geom_point(size = 2, color = "darkorchid") +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  theme_minimal() +
+  labs(x = "Soil Total Phosphorus (mg/kg)",
+       y = "") + 
+  theme(axis.title.x = element_text(margin = margin(t = 10)),
+        axis.title.y = element_text(margin = margin(r = 10))) +
+  theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  annotate("text", x = 0.35, y = 0.85, label = "n.s.", size = 3.5) +
+  scale_y_continuous(limits = c(-1, 1))
+  
+
+
+total_p_plot
+
+```
+
+# Combined plots
+
+```{r}
+combined_plot <- (nit_bs_plot / available_p_plot / total_p_plot) +
+  theme(plot.tag = element_text(size = 16))
+
+combined_plot
+
+ggsave("../figures/Sensitivity_bare_soil_nutrients.png",
+       combined_plot,
+       width = 4,
+       height = 6.3)
+```
+
+---
+
+# Fertile island and ecology-level fertility are independent? or are they correlated?
+
+To check if they are independent, we use two approaches:
+
+1. Simple correlation test
+2. Meta-regression with the database soil nutrients as a moderator
+
+
+## Nitrogen
+
+1. Simple correlation test
+
+
+```{r}
+nitrogen_cor <- dat %>% 
+  select(nit.RII, soil_n) %>% 
+  distinct() %>%
+  filter(!is.na(nit.RII) & !is.na(soil_n))
+
+# Then run correlation test
+with(nitrogen_cor, cor.test(nit.RII, soil_n))
+```
+
+2. Meta-regression with the database soil nutrients as a moderator
+
+
+```{r}
+nitrogen_data <- dat %>% 
+  select(id_es, id_paper, nit.RII, nit.RIIV, soil_n) %>%
+  filter(!is.na(nit.RII) & !is.na(nit.RIIV)) %>%
+  distinct()
+
+
+VCV_nitrogen <- vcalc(vi = nit.RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = nitrogen_data,
+             rho = 0.5)
+
+mod_nitrogen <- rma.mv(yi = nit.RII,
+                       V = VCV_nitrogen,
+                       random = list(~ 1 | id_es,
+                                     ~ 1 | id_paper),
+                       method = "REML",
+                       data = nitrogen_data,
+                       test = "t",
+                       mods = ~ soil_n)
+
+robust(mod_nitrogen, cluster = nitrogen_data$id_paper)
+```
+
+
+## Phosphorus
+
+
+1. Simple correlation test
+
+
+```{r}
+phosphorus_cor <- dat %>% 
+  select(p.RII, soil_phosphorus) %>% 
+  distinct() %>%
+  filter(!is.na(p.RII) & !is.na(soil_phosphorus))
+
+# Then run correlation test
+with(phosphorus_cor, cor.test(p.RII, soil_phosphorus))
+```
+
+
+2. Meta-regression with the database soil nutrients as a moderator
+
+
+```{r}
+phosphorus_data <- dat %>% 
+  select(id_es, id_paper, p.RII, p.RIIV, soil_phosphorus) %>%
+  filter(!is.na(p.RII) & !is.na(p.RIIV)) %>%
+  distinct()
+
+
+VCV_phosphorus <- vcalc(vi = p.RIIV, 
+                        cluster = id_paper,  
+                        obs = id_es, 
+                        data = phosphorus_data,
+                        rho = 0.5)
+
+mod_phosphorus <- rma.mv(yi = p.RII,
+                         V = VCV_phosphorus,
+                         random = list(~ 1 | id_es, 
+                                       ~ 1 | id_paper),
+                         method = "REML",
+                         data = phosphorus_data,
+                         test = "t",
+                         mods = ~ soil_phosphorus)
+
+robust(mod_phosphorus, cluster = phosphorus_data$id_paper)
+```

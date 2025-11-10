@@ -1,0 +1,1168 @@
+---
+title: "1 - Overall effects"
+author: "Giachetti et al."
+date: "2025-01-30"
+output: 
+  html_document: 
+    toc: true
+    number_sections: true
+---
+
+```{r}
+library(ape)       # Phylogenetic analysis
+library(metafor)   # Meta-analysis
+library(orchaRd)   # Orchard plots and functions for calculate I^2
+library(patchwork) # Arrange plots
+library(rotl)      # Open Tree of Life
+library(tidyverse) # Data manipulation
+```
+
+```{r}
+# Function to calculate adapted sampling variance based on effective size
+ess.var_cal <- function(n_island, n_bs) {
+  1 / n_island + 1 / n_bs
+}
+
+```
+
+
+## Introduction
+
+This document contains the code for the meta-analysis of the overall effects of nurse plants on different variables.
+
+Here, we estimated the overall effect of nurse plants on soil nitrogen, soil phosphorus, and plant facilitation. We used a multilevel meta-analytic model to account for the non-independence of effect sizes within studies and species. We also included a phylogenetic correlation matrix to account for the non-independence of species due to shared evolutionary history.
+
+### Steps of the analysis
+
+For the three variables of interest, we followed the same steps:
+
+1.  **Load data and filter**: We loaded the processed database and filtered the data to keep only the relevant variables for the analysis.
+
+2.  **Phylogenetic correlation**: We matched the species names in the database to the Open Tree Taxonomy and obtained a phylogenetic tree. We computed the branch lengths and used them to create a variance-covariance matrix for the phylogenetic correlation.
+
+3.  **Variance-covariance matrix** for non-independence: We accounted for the non-independence of effect sizes within studies by creating a variance-covariance matrix with a correlation coefficient of 0.5.
+
+4.  **Selection of the random-effect structure**: We compared different models with increasing levels of complexity to determine the best structure based on the Akaike Information Criterion (AIC).
+
+5.  **Fit the model**: We fit the best model using restricted maximum likelihood (REML) and obtained the overall effect size.
+
+6.  **Publication bias**: We assessed publication bias by plotting the effect sizes against their standard errors.
+
+7.  **Sensitivity analysis**: We performed a sensitivity analysis to assess the robustness of the results to the inclusion of individual studies.
+
+## Selecting the Random-Effect Structure
+
+To choose the most appropriate random-effect structure for our analysis, we tested different sources of variation:
+
+1.  Observation-level variance (id_es) – Accounts for differences within primary studies by assigning a unique ID to each pairwise comparison in the effect size calculation.
+
+2.  Study identity (id_paper) – Accounts for differences between primary studies by assigning a unique ID to each study.
+
+3.  Species identity (nurse_species) – Accounts for differences between species included in the studies.
+
+4.  Phylogeny correlation (phylo) – Accounts for the non-independence of species due to shared evolutionary history.
+
+We started with a simple model without random effects and progressively added each candidate. We compared models using Akaike Criterion Information (AIC) to determine the best structure.
+
+## Load data and filter
+
+```{r}
+dat <- read_csv("../data/Giachetti_2025_processed.csv", show_col_types = FALSE) 
+dim(dat)
+```
+
+
+# Plant facilitation
+
+```{r}
+dat.facilitation <- dat %>% 
+    select(id_paper,
+           id_es,
+           id_site,
+           authors,
+           year,
+           nurse_species,
+           n_island,
+           n_bs,
+           n_island_fi,
+           n_bs_fi,
+           RII,
+           RIIV) %>% 
+    filter(!is.na(RIIV))
+```
+
+### Phylogenetic correlation
+
+```{r}
+taxa <- tnrs_match_names(names = unique(dat.facilitation$nurse_species),
+                         context_name = "Land plants")
+taxa
+```
+
+All the names matched. Now get tree:
+
+```{r warning=FALSE}
+## Get the tree using the Open Tree Taxonomy (OTT) IDs
+tree <- tol_induced_subtree(taxa$ott_id)
+
+## Remove IDs and get the species names
+tree$tip.label <- strip_ott_ids(tree$tip.label, remove_underscores = TRUE)
+```
+
+```{r}
+plot(tree, show.tip.label = TRUE)
+```
+
+Finally, compute the branch lengths and use them for the variance-covariance matrix. Also, create a "phylo" column with the species names that will be linked to the phylogenetic matrix.
+
+```{r}
+tree2 <- ape::compute.brlen(tree)
+phylo_matrix <- ape::vcv(tree2, cor = TRUE)
+
+dat.facilitation$phylo <- dat.facilitation$nurse_species
+```
+
+### Variance‐covariance matrix for non-independence
+
+```{r}
+VCV <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.facilitation,
+             rho = 0.5)
+```
+
+### Multilevel meta-analytic model: factilitation RII
+
+#### Model selection
+
+We select the optimal random effect structure based on the Akaike Information Criterion (AIC). The best model is the one with the lowest AIC values.
+
+```{r}
+mod.null <- rma.mv(yi = RII,
+                  V = VCV,
+                  method = "ML",
+                  data = dat.facilitation,
+                  test = "t")
+
+mod.0 <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es),
+                  method = "ML",
+                  data = dat.facilitation,
+                  test = "t")
+ 
+
+mod.1 <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "ML",
+                  data = dat.facilitation,
+                  test = "t")
+                
+
+mod.2 <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper,
+                                ~ 1 | nurse_species),
+                  method = "ML",
+                  data = dat.facilitation,
+                  test = "t")
+
+mod.3 <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper,
+                                ~ 1 | nurse_species,
+                                ~ 1 | phylo),
+                  method = "ML",
+                  R = list(phylo = phylo_matrix),
+                  data = dat.facilitation,
+                  test = "t")
+```
+
+```{r}
+AIC(mod.null, mod.0, mod.1, mod.2, mod.3)
+```
+
+Best model is the one.
+
+#### Final model
+
+```{r}
+mod.facilitationRII <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.facilitation,
+                  test = "t")
+
+summary(mod.facilitationRII)
+```
+
+```{r}
+rob.mod.facilitationRII <- robust(mod.facilitationRII, cluster = dat.facilitation$id_paper)
+rob.mod.facilitationRII 
+```
+```{r}
+format(i2_ml(rob.mod.facilitationRII), scientific=FALSE)
+```
+
+
+#### Plot
+
+```{r}
+facilitation.plot <- orchard_plot(rob.mod.facilitationRII,
+                                  group = "id_paper",
+                                  xlab = "",   # Left empty, because the last subplot has the RII label
+                                  k.pos = 0.9,
+                                  legend.pos = "none",
+                                  trunk.size = 1.5,
+                                  branch.size = 2, 
+                                  twig.size = 'none') +
+  scale_fill_manual(values = "dodgerblue") +
+  scale_color_manual(values = "dodgerblue") +
+  ylim(-0.75, 1) +
+  labs(x = "Plant Interaction\n Intensity") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+                                    
+facilitation.plot
+```
+
+### Bias
+
+#### Funnel plot
+
+```{r}
+funnel(mod.facilitationRII,
+       yaxis = "seinv",
+       ylab = "Precision (1/SE)",
+       xlab = "Plant facilitation (RII)", 
+       xlim = c(-2, 2))
+```
+
+#### Test for Time Lab Bias:
+
+```{r}
+# Scale the year to zero
+
+dat.facilitation <- dat.facilitation %>% 
+  mutate(year_scaled = scale(year, scale = FALSE))
+
+
+mod.facilitation.lagbias <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.facilitation,
+                  test = "t",
+                  mod = ~ year_scaled)
+
+summary(mod.facilitation.lagbias)
+```
+
+```{r}
+RII.labBias_plot <- bubble_plot(
+  mod.facilitation.lagbias,
+  mod = "year_scaled",
+  xlab = "Publication year (centered to zero)",
+  ylab = "Plant facilitation (RII)",
+  group = "id_paper") +
+  ylim(-0.7, 1.5)
+
+RII.labBias_plot
+```
+
+#### Test for small-study effect
+
+```{r}
+# Calculate effective sample variance and standard error
+dat.facilitation$ess_var <- ess.var_cal(dat.facilitation$n_island_fi, dat.facilitation$n_bs_fi)
+dat.facilitation$ess_se <- sqrt(dat.facilitation$ess_var)
+```
+
+```{r}
+mod.facilitation.smallstudy <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.facilitation,
+                  test = "t",
+                  mod = ~ ess_se)
+
+summary(mod.facilitation.smallstudy)
+```
+
+```{r}
+RII.smallStudy_plot <- bubble_plot(
+  mod.facilitation.smallstudy,
+  mod = "ess_se",
+  xlab = "Adjusted standard error",
+  ylab = "Plant facilitation (RII)",
+  group = "id_paper") +
+  ylim(-0.7, 1.5)
+
+RII.smallStudy_plot
+```
+
+
+### Sensitivity analysis
+
+
+
+```{r}
+loo_res <- dat.facilitation %>% 
+  distinct(id_paper, .keep_all = TRUE) %>% 
+  mutate(paper_reference = paste(.$authors, .$year)) %>% 
+  select(id_paper, paper_reference) %>% 
+  mutate(b = NA_real_, ci_lb = NA_real_, ci_ub = NA_real_)
+
+
+for (i in seq_along(loo_res$id_paper)) {
+  tmp_dat <- dat.facilitation %>% 
+    filter(id_paper != loo_res$id_paper[i])
+  
+  tmp_VCV <- vcalc(vi = RIIV, 
+           cluster = id_paper,  
+           obs = id_es, 
+           data = tmp_dat,
+           rho = 0.5)
+  
+  tmp_mod <- rma.mv(yi = RII,
+                    V = tmp_VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = tmp_dat,
+                  test = "t")
+  
+  tmp_mod <- robust(tmp_mod, cluster = tmp_dat$id_paper)
+  
+  loo_res$b[i] <- tmp_mod$b[1]
+  loo_res$ci_lb[i] <- tmp_mod$ci.lb[1]
+  loo_res$ci_ub[i] <- tmp_mod$ci.ub[1]
+}
+
+```
+
+
+```{r}
+loo_res %>% 
+  mutate(is_signif = if_else(ci_lb > 0, "yes", "no")) %>% 
+  ggplot(aes(x = paper_reference,
+             y = b,
+             ymin = ci_lb,
+             ymax = ci_ub,
+             color = is_signif)) +
+  geom_pointrange(color = "dodgerblue") +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(x = "Paper left out",
+       y = "Plant facilitation RII (95% CI)") +
+  theme(legend.position = "none")
+```
+
+
+
+# N: Nurse effect on soil nitrogen
+
+First, filter the database to keep cases with nitrogen measures.
+
+```{r}
+dat.nit <- dat %>% 
+    select(id_paper,
+           id_es,
+           id_site,
+           authors,
+           year,
+           nurse_species,
+           nit.RII,
+           nit.RIIV,
+           n_island,
+           n_bs,
+           n_island_fi,
+           n_bs_fi,
+           soil_n)
+  
+dim(dat.nit)
+```
+
+There where 5 observations with RII 1 or -1. This happens when one of the means is 0. In those cases, the arcsine transformation was not possible because it uses the mean values as the denominator. Thus, those observations have been removed.
+
+Also, this RII of 1 were misleading. For instance, in one of the observations, the mean for emergence in island was 0%, and in bare soil it was 1%. This leads to a RII of -1, which is a highly influencial value in the models and not representative of the biology.
+
+```{r}
+dat.nit <- dat.nit %>% 
+    filter(!is.na(nit.RIIV))
+```
+
+Also there are some repeated values. That is because they correspond to different forms of factilitation analyzed.
+
+```{r}
+dat.nit <- dat.nit %>%
+  group_by(id_paper) %>%  
+  distinct(nit.RII, .keep_all = TRUE) %>%  # Keep unique values of nit.RII within each group
+  ungroup()  
+```
+
+### Phylogenetic correlation
+
+The code for calculating the phylogenetic matrix is adapted from [Cinar et al. 2022](https://doi.org/10.1111/2041-210X.13760) and [Felix et al. 2023](https://doi.org/10.1111/1365-2435.14441). See also [rotl vignette](https://cran.r-project.org/web/packages/rotl/vignettes/rotl.html).
+
+First, match all the names from our database to those in the Open Tree Taxonomy:
+
+```{r}
+taxa <- tnrs_match_names(names = unique(dat.nit$nurse_species),
+                         context_name = "Land plants")
+taxa
+```
+
+All the names matched. Now get tree:
+
+```{r warning=FALSE}
+## Get the tree using the Open Tree Taxonomy (OTT) IDs
+tree <- tol_induced_subtree(taxa$ott_id)
+
+## Remove IDs and get the species names
+tree$tip.label <- strip_ott_ids(tree$tip.label, remove_underscores = TRUE)
+```
+
+```{r}
+plot(tree, show.tip.label = TRUE)
+```
+
+Finally, compute the branch lengths and use them for the variance-covariance matrix. Also, create a "phylo" column with the species names that will be linked to the phylogenetic matrix.
+
+```{r}
+tree2 <- ape::compute.brlen(tree)
+phylo_matrix <- ape::vcv(tree2, cor = TRUE)
+
+dat.nit$phylo <- dat.nit$nurse_species
+```
+
+### Variance‐covariance matrix for non-independence
+
+Many effect sizes come from the same study and this produces non-independence between those observations. Beside of the inclusion of random effects in the model, Nakagawa et al. (2023) suggests to model the dependence with a variance-covariance matrix.
+
+We asume that observations from the same paper are correlated with rho = 0.5. This assumptions was proposed by Nakagawa et al (2023) and was used in modern meta-analysis (e.g., Yang et al. 2024; Macartney et al. 2024).
+
+```{r}
+VCV <- vcalc(vi = nit.RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.nit,
+             rho = 0.5)
+```
+
+## Multilevel meta-analytic model: nitrogen RII
+
+This model and it implementation is based in [Nakagawa et al. 2023](https://doi.org/10.1186/s13750-023-00301-6)
+
+We select the optimal random effect structure based on the Akaike Information Criterion (AIC). The best model is the one with the lowest AIC values.
+
+#### Model selection
+
+```{r}
+mod.null <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  method = "ML",
+                  data = dat.nit,
+                  test = "t")
+
+mod.1 <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "ML",
+                  data = dat.nit,
+                  test = "t")
+                
+mod.2 <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper,
+                                ~ 1 | nurse_species),
+                  method = "ML",
+                  data = dat.nit,
+                  test = "t")
+
+mod.3 <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper,
+                                ~ 1 | nurse_species,
+                                ~ 1 | phylo),
+                  method = "ML",
+                  R = list(phylo = phylo_matrix),
+                  data = dat.nit,
+                  test = "t")
+```
+
+```{r}
+AIC(mod.null, mod.1, mod.2, mod.3)
+```
+
+
+
+#### Final model
+
+The best one was the model 1. Now fit the model again but using REML
+
+
+```{r}
+mod.nitRII <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.nit,
+                  test = "t")
+
+summary(mod.nitRII)
+```
+
+Finally, we obtain cluster-robust standard errors:
+
+```{r}
+robust.mod.nitRII <- robust(mod.nitRII, cluster = dat.nit$id_paper)
+robust.mod.nitRII
+```
+
+```{r}
+i2_ml(robust(mod.nitRII, cluster = dat.nit$id_paper))
+```
+
+
+### Plot
+
+```{r}
+nit.plot <- orchard_plot(robust.mod.nitRII, 
+                         group = "id_paper",
+                         xlab = "",   
+                         k.pos = 0.9,
+                         legend.pos = "none",
+                         trunk.size = 1.5,
+                         branch.size = 2, 
+                         twig.size = 0) +
+  scale_fill_manual(values = "darkorange") +
+  scale_color_manual(values = "darkorange") + 
+  ylim(-0.75, 1) +
+  labs(x = "Nitrogen\n Fertile Island") +
+  theme(axis.text.y = element_blank(),
+       axis.ticks.y = element_blank(),
+       axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+
+nit.plot
+```
+
+### Bias
+
+#### Funnel plot
+
+```{r}
+funnel(mod.nitRII, 
+       yaxis = "seinv",
+       ylab = "Precision (1/SE)",
+       xlab = "RII (soil nitrogen)", 
+       xlim = c(-2, 2))
+```
+
+#### Test for Time Lag Bias:
+
+```{r}
+# Scale the year to zero
+
+dat.nit <- dat.nit %>% 
+  mutate(year_scaled = scale(year, scale = FALSE))
+
+
+mod.nit.lagbias <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.nit,
+                  test = "t",
+                  mod = ~ year_scaled)
+
+summary(mod.nit.lagbias)
+```
+
+```{r}
+nitRII.labBias_plot <- bubble_plot(
+  mod.nit.lagbias,
+  mod = "year_scaled",
+  xlab = "Publication year (centered to zero)",
+  ylab = "Nurse effect on soil nitrogen (RII)",
+  group = "id_paper") +
+  ylim(-0.5, 1.5)
+
+nitRII.labBias_plot
+```
+
+#### Test for small-study effect
+
+```{r}
+
+# Calculate effective sample variance and standard error
+dat.nit$ess_var <- ess.var_cal(dat.nit$n_island_fi, dat.nit$n_bs_fi)
+dat.nit$ess_se <- sqrt(dat.nit$ess_var)
+
+```
+
+```{r}
+mod.nit.smallstudy <- rma.mv(yi = nit.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.nit,
+                  test = "t",
+                  mod = ~ ess_se)
+
+summary(mod.nit.smallstudy)
+```
+
+```{r}
+nitRII.smallStudy_plot <- bubble_plot(
+  mod.nit.smallstudy,
+  mod = "ess_se",
+  xlab = "Adjusted standard error",
+  ylab = "Nurse effect on soil nitrogen (RII)",
+  group = "id_paper") +
+  ylim(-0.5, 1.5)
+
+nitRII.smallStudy_plot
+```
+
+### Sensitivity analysis
+
+#### Leave-one-study-out
+
+We performed a leave-one-study-out sensitivity analysis to assess the robustness of the results to the inclusion of individual studies.
+
+```{r}
+# Create a dataframe to save the results
+# Get a list of all the papers
+# Run a loop: in each iteration, removes one paper from the dataframe
+# Calculate de VCV,
+# Run the model
+# Extract the information
+
+loo_res <- dat.nit %>% 
+  distinct(id_paper, .keep_all = TRUE) %>% 
+  mutate(paper_reference = paste(.$authors, .$year)) %>% 
+  select(id_paper, paper_reference) %>% 
+  mutate(b = NA_real_, ci_lb = NA_real_, ci_ub = NA_real_)
+
+
+for (i in seq_along(loo_res$id_paper)) {
+  tmp_dat <- dat.nit %>% 
+    filter(id_paper != loo_res$id_paper[i])
+  
+  tmp_VCV <- vcalc(vi = nit.RIIV, 
+           cluster = id_paper,  
+           obs = id_es, 
+           data = tmp_dat,
+           rho = 0.5)
+  
+  tmp_mod <- rma.mv(yi = nit.RII,
+                    V = tmp_VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = tmp_dat,
+                  test = "t")
+  
+  tmp_mod <- robust(tmp_mod, cluster = tmp_dat$id_paper)
+  
+  loo_res$b[i] <- tmp_mod$b[1]
+  loo_res$ci_lb[i] <- tmp_mod$ci.lb[1]
+  loo_res$ci_ub[i] <- tmp_mod$ci.ub[1]
+}
+
+```
+
+
+```{r}
+loo_res %>% 
+  mutate(is_signif = if_else(ci_lb > 0, "yes", "no")) %>% 
+  ggplot(aes(x = paper_reference,
+             y = b,
+             ymin = ci_lb,
+             ymax = ci_ub,
+             color = is_signif)) +
+  geom_pointrange(color = "darkorange") +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(x = "Paper left out",
+       y = "Nurse effect on soil nitrogen (95% CI)") +
+  theme(legend.position = "none")
+```
+
+# P: Nurse effect on soil phosphorus
+
+The approach is the same as before.
+
+```{r}
+dat.phosphorus <- dat %>% 
+    select(id_paper,
+           id_es,
+           id_site,
+           authors,
+           year,
+           nurse_species,
+           p.RII,
+           p.RIIV,
+           n_island,
+           n_bs,
+           n_island_fi,
+           n_bs_fi,
+           soil_phosphorus) %>% 
+    filter(!is.na(p.RIIV))
+```
+
+```{r}
+dat.phosphorus <- dat.phosphorus %>%
+  group_by(id_paper) %>%  
+  distinct(p.RII, .keep_all = TRUE) %>%  # Keep unique values of nit.RII within each group
+  ungroup()  
+```
+
+#### Phylogenetic correlation
+
+```{r}
+phosphorus.taxa <- tnrs_match_names(names = unique(dat.phosphorus$nurse_species),
+                         context_name = "Land plants")
+phosphorus.taxa
+```
+
+```{r warning=FALSE}
+## Get the tree using the Open Tree Taxonomy (OTT) IDs
+phosphorus.tree <- tol_induced_subtree(phosphorus.taxa$ott_id)
+
+## Remove IDs and get the species names
+phosphorus.tree$tip.label <- strip_ott_ids(phosphorus.tree$tip.label, remove_underscores = TRUE)
+
+```
+
+```{r}
+plot(phosphorus.tree, show.tip.label = TRUE)
+```
+
+```{r}
+## Compute the branch lengths and use them for the variance-covariance matrix
+phosphorus.tree2 <- ape::compute.brlen(phosphorus.tree)
+phosphorus.phylo_matrix <- ape::vcv(phosphorus.tree2, cor = TRUE)
+
+## Create a "phylo" column with the species names.
+## This column will be linked to the phylogenetic matrix
+dat.phosphorus$phylo <- dat.phosphorus$nurse_species
+
+```
+
+#### VCV matrix
+
+```{r}
+VCV <- vcalc(vi = p.RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.phosphorus,
+             rho = 0.5)
+```
+
+#### Multilevel meta-analytic model: phosphorus RII
+
+##### Model selection
+
+Select the more parsimonious model:
+
+```{r}
+mod.null <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  method = "ML",
+                  data = dat.phosphorus,
+                  test = "t")
+
+mod.1 <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "ML",
+                  data = dat.phosphorus,
+                  test = "t")
+
+mod.2 <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper,
+                                ~ 1 | nurse_species),
+                  method = "ML",
+                  data = dat.phosphorus,
+                  test = "t")
+
+mod.3 <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper,
+                                ~ 1 | nurse_species,
+                                ~ 1 | phylo),
+                  method = "ML",
+                  R = list(phylo = phosphorus.phylo_matrix),
+                  data = dat.phosphorus,
+                  test = "t")
+```
+
+```{r}
+(AIC(mod.null, mod.1, mod.2, mod.3))
+```
+
+### Final Model
+
+In this case, the best model was the model 2, but the difference in AIC is < 2.
+
+This, the model 1 was selected because it is more parsimonious.
+
+```{r}
+mod.p.final <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.phosphorus,
+                  test = "t")
+
+summary(mod.p.final)
+```
+Get cluster robust estimates
+
+```{r}
+rob.mod.p.final <- robust(mod.p.final, cluster = dat.phosphorus$id_paper)
+rob.mod.p.final
+```
+```{r}
+i2_ml(robust(mod.p.final, cluster = dat.phosphorus$id_paper))
+```
+
+
+#### Phosphorus RII plot
+
+```{r}
+phosphorus.plot <- orchard_plot(rob.mod.p.final,
+                                group = "id_paper",
+                                xlab = "Relative Interaction Index (RII)",
+                                k.pos = 0.9,
+                                legend.pos = "none",
+                                trunk.size = 1.5,
+                                branch.size = 2, 
+                                twig.size = 0) +
+  scale_fill_manual(values = "darkorchid") +
+  scale_color_manual(values = "darkorchid") +
+  ylim(-0.75, 1) +
+  labs(x = "Phosphorus\n Fertile Island") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_text(angle = 0, vjust = 0.5, hjust = 0.5))
+  
+
+phosphorus.plot
+```
+
+### Bias
+
+
+##### Funnel plot
+
+```{r}
+funnel(mod.p.final,
+       yaxis = "seinv",
+       ylab = "Precision (1/SE)",
+       xlab = "RII (soil phosphorus)", 
+       xlim = c(-2, 2))
+```
+
+#### Test for Time Lag Bias:
+
+```{r}
+# Scale the year to zero
+
+dat.phosphorus <- dat.phosphorus %>% 
+  mutate(year_scaled = scale(year, scale = FALSE))
+
+
+mod.phosphorus.lagbias <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.phosphorus,
+                  test = "t",
+                  mod = ~ year_scaled)
+
+summary(mod.phosphorus.lagbias)
+```
+
+```{r}
+pRII.labBias_plot <- bubble_plot(
+  mod.phosphorus.lagbias,
+  mod = "year_scaled",
+  xlab = "Publication year (centered to zero)",
+  ylab = "Nurse effect on soil phosphorus",
+  group = "id_paper") +
+  ylim(-0.5, 1.5)
+
+pRII.labBias_plot
+```
+#### Test for small-study effect
+
+```{r}
+# Function to calculate adapted sampling variance based on effective size
+ess.var_cal <- function(n_island, n_bs) {
+  1 / n_island + 1 / n_bs
+}
+
+# Calculate effective sample variance and standard error
+dat.phosphorus$ess_var <- ess.var_cal(dat.phosphorus$n_island_fi, dat.phosphorus$n_bs_fi)
+dat.phosphorus$ess_se <- sqrt(dat.phosphorus$ess_var)
+
+```
+
+```{r}
+mod.phosphorus.smallstudy <- rma.mv(yi = p.RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.phosphorus,
+                  test = "t",
+                  mod = ~ ess_se)
+
+summary(mod.phosphorus.smallstudy)
+```
+
+```{r}
+pRII.smallStudy_plot <- bubble_plot(
+  mod.phosphorus.smallstudy,
+  mod = "ess_se",
+  xlab = "Adjusted standard error",
+  ylab = "Nurse effect on soil phosphorus (RII)",
+  group = "id_paper") +
+  ylim(-0.5, 1.5)
+
+pRII.smallStudy_plot
+```
+
+### Sensitivity analysis
+
+
+```{r}
+loo_res <- dat.phosphorus %>% 
+  distinct(id_paper, .keep_all = TRUE) %>% 
+  mutate(paper_reference = paste(.$authors, .$year)) %>% 
+  select(id_paper, paper_reference) %>% 
+  mutate(b = NA_real_, ci_lb = NA_real_, ci_ub = NA_real_)
+
+
+for (i in seq_along(loo_res$id_paper)) {
+  tmp_dat <- dat.phosphorus %>% 
+    filter(id_paper != loo_res$id_paper[i])
+  
+  tmp_VCV <- vcalc(vi = p.RIIV, 
+           cluster = id_paper,  
+           obs = id_es, 
+           data = tmp_dat,
+           rho = 0.5)
+  
+  tmp_mod <- rma.mv(yi = p.RII,
+                    V = tmp_VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = tmp_dat,
+                  test = "t")
+  
+  tmp_mod <- robust(tmp_mod, cluster = tmp_dat$id_paper)
+  
+  loo_res$b[i] <- tmp_mod$b[1]
+  loo_res$ci_lb[i] <- tmp_mod$ci.lb[1]
+  loo_res$ci_ub[i] <- tmp_mod$ci.ub[1]
+}
+
+```
+
+
+```{r}
+loo_res %>% 
+  mutate(is_signif = if_else(ci_lb > 0, "yes", "no")) %>% 
+  ggplot(aes(x = paper_reference,
+             y = b,
+             ymin = ci_lb,
+             ymax = ci_ub,
+             color = is_signif)) +
+  geom_pointrange(color = "darkorchid") +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(x = "Paper left out",
+       y = "Nurse effect on soil phosphorus (95% CI)") +
+  theme(legend.position = "none")
+```
+
+
+# Full plot
+
+```{r}
+full_plot <- facilitation.plot / nit.plot / phosphorus.plot 
+full_plot
+```
+
+
+
+
+# Map plot
+
+```{r}
+library(plotbiomes)
+```
+
+```{r}
+worldmap <- map_data("world")
+
+map <- ggplot() +
+    geom_polygon(data = worldmap, aes(x = long, y = lat, group = group),
+                 fill = "gray90") + 
+    theme_void()
+
+map <- map +
+    geom_point(data = dat,
+               aes(x = long, y = lat,
+                   fill = aridity_index),
+               shape = 21,
+               size = 3,
+               alpha = 0.6,
+               stroke = .6) +
+    scale_fill_gradient2(midpoint = 0.5, low = "red", mid = "yellow",
+                         high = "steelblue", space = "Lab") +
+    labs(fill = "Aridity index")
+
+map
+
+```
+
+Whittaker plot
+
+```{r}
+whittaker <- whittaker_base_plot() +
+    coord_fixed(ratio = 1/10) + # aspect ratio, expressed as y / x
+    geom_point(data = dat, 
+               aes(x = tavg, y = (prec/10),
+                   color = aridity_index),
+               size = 3.3,
+               alpha = 0.9
+               ) +
+    geom_point(data = dat, 
+               aes(x = tavg, y = (prec/10)),
+               size = 3.6,
+               color = "black",
+               shape = 21,
+               alpha = 0.5,
+               stroke = .1) + 
+        theme_minimal() +
+    theme(legend.position = "right",
+          theme(legend.key.size = unit(0.8, 'cm'))
+          ) +
+    scale_color_gradient2(midpoint = 0.5, low = "red", mid = "yellow",
+                          high = "steelblue", space = "Lab") +
+    guides(colour = "none")
+
+whittaker
+```
+
+
+```{r}
+layout <- c(area(1, 1, 1, 5),
+            area(2, 2, 2, 4))
+
+layout
+
+fig1 <- map + whittaker + plot_layout(design = layout)
+fig1
+```
+
+### Save Fig 2: maps
+
+```{r}
+ggsave(filename = "../figures/Map.jpeg",
+       plot = map,
+       width = 2400,
+       height = 1000,
+       units = "px")
+
+ggsave(filename = "../figures/Map.pdf",
+       device = "pdf",
+       plot = map,
+       width = 2400,
+       height = 1000,
+       units = "px")
+```
+
+
+```{r}
+ggsave(filename = "../figures/Whittaker.jpeg",
+       plot = whittaker,
+       width = 1600,
+       height = 1100,
+       units = "px")
+
+
+ggsave(filename = "../figures/Whittaker.pdf",
+       devide = "pdf",
+       plot = whittaker,
+       width = 1600,
+       height = 1100,
+       units = "px")
+```
+
+
+```{r}
+ggsave(filename = "../figures/Fig2.jpeg",
+       plot = fig1,
+       width = 1600,
+       height = 2100,
+       units = "px")
+
+ggsave(filename = "../figures/Fig2.pdf",
+       devide = "pdf",
+       plot = fig1,
+       width = 1600,
+       height = 2100,
+       units = "px")
+```
+
+
+### Save Fig 3: overall plot
+
+```{r}
+ggsave(filename = "../figures/Figure3.jpeg",
+       plot = full_plot,
+       width = 1800,
+       height = 1100,
+       units = "px")
+
+ggsave(filename = "../figures/Figure3.pdf",
+       device = "pdf",
+       plot = full_plot,
+       width = 1800,
+       height = 1100,
+       units = "px")
+```
+

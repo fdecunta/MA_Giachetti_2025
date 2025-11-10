@@ -1,0 +1,104 @@
+---
+title: "0b - Database overview"
+author: "Giachetti et al."
+date: "2025-02-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+
+# Load data
+
+```{r}
+data_Giachetti <- read_csv("../data/Giachetti_2025_processed.csv", show_col_types = FALSE) |>
+  filter(!is.na(RIIV))
+```
+
+# Overview
+
+## How many observations?
+
+```{r}
+nrow(data_Giachetti)
+```
+
+## How many studies?
+
+```{r}
+data_Giachetti |> 
+  distinct(title) |>
+  nrow()
+```
+
+## How many nurse species?
+
+```{r}
+data_Giachetti |>
+  distinct(nurse_species) |>
+  nrow()
+```
+
+# How are distributed the measures of plant performance?
+
+```{r}
+# Some rows has "rii_biomass" in `umbrella`. They should have `biomass`
+
+data_Giachetti$umbrella <- gsub("rii_biomass", "biomass", data_Giachetti$umbrella)
+```
+
+
+```{r}
+data_Giachetti |>
+  count(umbrella) |>
+  mutate(n = n / sum(n) * 100) |>
+  arrange(desc(n)) 
+```
+
+```{r}
+data_Giachetti |>
+  count(umbrella) |>
+  mutate(n = n / sum(n) * 100) |>
+  arrange(desc(n)) |>
+  ggplot(aes(x = fct_reorder(umbrella, n), y = n, fill = umbrella)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Measure of plant performance", y = "Percentage (%)") +
+  theme_minimal()
+```
+
+# How many report nitrogen and how many phosphorus?
+
+```{r}
+data_Giachetti |>
+  filter(!is.na(nit.RII)) |>
+  nrow()
+```
+
+```{r}
+data_Giachetti |>
+  filter(!is.na(nit.RII)) |>
+  nrow() / nrow(data_Giachetti) * 100
+```
+
+
+```{r}
+data_Giachetti |>
+  filter(!is.na(p.RII)) |>
+  nrow() 
+```
+
+
+```{r}
+data_Giachetti |>
+  filter(!is.na(p.RII)) |>
+  nrow() / nrow(data_Giachetti) * 100
+```
+
+
+
+
+

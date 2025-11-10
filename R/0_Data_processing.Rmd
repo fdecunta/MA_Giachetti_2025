@@ -1,0 +1,541 @@
+---
+title: "0 - Data processing"
+author: "Giachetti et al."
+date: "2025-01-20"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+# Load raw data
+
+```{r}
+raw_data <- read_csv("../data/Giachetti_2025_raw.csv", show_col_types = FALSE) %>% 
+  janitor::clean_names()
+```
+
+
+```{r}
+raw_data$case_id <- 1:nrow(raw_data)
+```
+
+
+As most of the data was collected using graphical tools, we round the
+numbers to the fourth decimal, just for convenience.
+
+```{r}
+# Round all numeric variables to the fourth decimal
+raw_data <- raw_data %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+glimpse(raw_data)
+```
+
+As we aimed to run a phylogenetically controled meta-analysis, we remove
+those studies that did not inform the plant species.
+
+```{r}
+print("Rows removed: ")
+raw_data %>% 
+  filter(nurse_species == "unknown" | nurse_species == "various") %>% 
+  nrow()
+
+# Only 7 observations were removed
+
+raw_data <- raw_data %>%  
+  filter(nurse_species != "unknown", nurse_species != "various")
+```
+
+```{r}
+# Create and effect size ID
+raw_data <- raw_data %>% 
+  mutate(id_es = row_number())
+```
+
+# Compute the Relative Interaction Index (RII) and its sampling variance
+
+The formulas are based on the original paper by Armas et al. (2004) and
+its Appendix A, available at:
+<https://esapubs.org/archive/ecol/E085/082/appendix-A.htm>.
+
+For familiarity, we use the same variable names as in the `escalc()`
+function from the `metafor` package:
+
+-   `m1i`: Mean of the treatment group
+
+-   `sd1i`: Standard deviation of the treatment group
+
+-   `n1i`: Sample size of the treatment group
+
+-   `m2i`: Mean of the control group
+
+-   `sd2i`: Standard deviation of the control group
+
+-   `n2i`: Sample size of the control group
+
+```{r}
+## -------------------------------- ##
+## Relative Interaction Index (RII) ##
+## -------------------------------- ##
+
+# Compute the Relative Interaction Index (RII) and its sampling variance.
+# The formulas are based on Armas et al. (2004), Appendix A:
+# https://esapubs.org/archive/ecol/E085/082/appendix-A.htm
+
+rii_mean <- function(m1i, m2i) {
+    (m1i - m2i) / (m1i + m2i)
+}
+
+rii_var <- function(m1i, sd1i, n1i, m2i, sd2i, n2i) {
+    var1 <- sd1i^2
+    var2 <- sd2i^2
+    ro <- (var1 / n1i - var2 / n2i) / (var1 / n1i + var2 / n2i)
+
+    ((var1 / n1i) + (var2 / n2i)) / ((m1i + m2i)^2) *
+        (1 + (((m1i - m2i)^2) / ((m1i + m2i)^2)) + ((2 * ro * (m1i - m2i)) / (m1i + m2i)))
+}
+```
+
+Filter rows that need RII calculation. Before the calculation, transform
+proportions to percentage, and then apply arcsine transformation to the
+to the percentages to make them approximately normal.
+
+```{r}
+## ---------------------- ##
+## Arcsine Transformation ##
+## ---------------------- ##
+
+# Some variables are proportions, so we transform them
+# prior to calculating the RII. 
+# We compute the arcsine transformation for the mean 
+# and calculate the associated variance using the formulas 
+# described by Macartney et al. (2022).
+
+# References:
+# - Macartney, Lagisz, & Nakagawa (2022): https://doi.org/10.1016/j.neubiorev.2022.104554
+
+mean_asin_transf <- function(x) {
+    # Assumes x is a percentage
+    if (any(x < 0 | x > 100)) stop("x must be a percentage between 0 and 100.")
+    m <- x / 100
+    asin(sqrt(m))
+}
+
+
+sd_asin_transf <- function(x, sd) {
+    if (any(x < 0 | x > 100)) stop("x must be a percentage between 0 and 100.")
+    if (any(sd < 0)) stop("sd must be non-negative.")
+  
+    m <- x / 100
+    s <- sd / 100
+
+    numerator <- (s^2)
+    denominator <- 4 * m * (1 - m)
+    
+    t_var <- numerator / denominator
+    t_sd <- sqrt(t_var)
+    return(t_sd)    
+}
+```
+
+We calculate the RII using percentages and also with arcsine
+transformation.
+
+```{r}
+# Calculate RII for the data without arcsine transformation
+# This will be called "orig_RII"
+RII_data <- raw_data %>% 
+  mutate(orig_RII = if_else(startsWith(variable, "rii"),
+                       rii,
+                       rii_mean(mean_island, mean_bs)),
+         orig_RIIV = if_else(startsWith(variable, "rii"),
+                        sd_rii^2,
+                        rii_var(mean_island, 
+                                sd_island,
+                                n_island,
+                                mean_bs, 
+                                sd_bs, 
+                                n_bs))) 
+```
+
+Calculate RII for the data with arcsine transformation
+
+```{r}
+# First, transform from proportion to percentage before apply arcsin (only one observation)
+RII_data <- RII_data %>%
+  mutate(
+    mean_island = ifelse(unidad == "proportion", mean_island * 100, mean_island),
+    sd_island = ifelse(unidad == "proportion", sd_island * 100, sd_island),
+    mean_bs = ifelse(unidad == "proportion", mean_bs * 100, mean_bs),
+    sd_bs = ifelse(unidad == "proportion", sd_bs * 100, sd_bs),
+    unidad = ifelse(unidad == "proportion", "%", unidad))
+```
+
+```{r}
+# Then, apply arcsine transformation
+
+# For some reason, the previous code did not work, so I had to do it in two steps:
+# Split the dataset into two parts, one with percentages and the other with other units.
+# Apply the arcsine transformation to the percentage data, and then merge the two datasets.
+
+# Split the dataset
+percentages <- RII_data %>%
+  filter(unidad == "%")
+
+not_percentages <- RII_data %>%
+  filter(unidad != "%")
+
+# Apply the arcsine transformation
+percentages <- percentages %>%
+  mutate(mean_island = mean_asin_transf(mean_island),
+         sd_island = sd_asin_transf(mean_island, sd_island),
+         mean_bs = mean_asin_transf(mean_bs),
+         sd_bs = sd_asin_transf(mean_bs, sd_bs))
+
+# Merge the two datasets
+RII_data <- bind_rows(percentages, not_percentages)
+
+# Remove the unnecessary datasets
+rm(percentages, not_percentages)
+```
+
+```{r}
+# Finally, calculate RII for the data with arcsine transformation
+RII_data <- RII_data %>%
+  mutate(RII = if_else(startsWith(variable, "rii"),
+                       rii,
+                       rii_mean(mean_island, mean_bs)),
+         RIIV = if_else(startsWith(variable, "rii"),
+                        sd_rii,
+                        rii_var(mean_island, 
+                                sd_island,
+                                n_island,
+                                mean_bs, 
+                                sd_bs,
+                                n_bs)))
+```
+
+## RII for Nitrogen and Phosphorus
+
+```{r}
+RII_data <- RII_data %>% 
+  mutate(nit.RII = rii_mean(mean_island_nit, mean_bs_nit),
+         nit.RIIV = rii_var(mean_island_nit, sd_island_nit, n_island_fi, mean_bs_nit, sd_bs_nit, n_bs_fi),
+         p.RII = rii_mean(mean_island_p, mean_bs_p),
+         p.RIIV = rii_var(mean_island_p, sd_island_p, n_island_fi, mean_bs_p, sd_bs_p, n_bs_fi))
+```
+
+
+```{r}
+# Save the raw data with the effect sizes
+
+# write_csv(RII_data, "../data/Giachetti_2025_raw_RII.csv")
+```
+
+
+## Remove unnecessary columns
+
+```{r}
+# Don't remove the sample sizes. They are used later, when testing for publication bias.
+# They are used to calculate the adapted sampling variance (Nakagawa et al. 2023)
+
+# RII_data <- RII_data %>% 
+#   dplyr::select(-c(variable,
+#                    unidad,
+#                    rii,
+#                    sd_rii,
+#                    mean_island,
+#                    sd_island,
+#                    n_island,
+#                    mean_bs,
+#                    sd_bs,
+#                    n_bs,
+#                    mean_island_nit,
+#                    sd_island_nit,
+#                    n_island_fi,
+#                    mean_bs_nit,
+#                    sd_bs_nit,
+#                    n_bs_fi,
+#                    mean_island_p,
+#                    sd_island_p,
+#                    mean_bs_p,
+#                    sd_bs_p,
+#                    n_rii))
+
+
+RII_data <- RII_data %>% 
+  mutate(n_island = if_else(is.na(n_island), n_rii, n_island),
+         n_bs = if_else(is.na(n_bs), n_rii, n_bs)) %>% 
+  select(-n_rii)
+
+```
+
+# Download and append data (nitrogen, phosphorus, and aridity index)
+
+To download this data, we need the geographical coordinates of each
+experiment. This data is available in the file
+`Giachetti_2025_coordinates.csv`.
+
+Load the coordinates data and merge it with the processed data.
+
+```{r}
+coordinates_data <- read_csv("../data/Giachetti_2025_coordinates.csv", show_col_types = FALSE) %>% 
+  janitor::clean_names() %>% 
+  filter(title %in% RII_data$title) %>% 
+  select(-id_paper)
+```
+
+Append the coordinates data to the processed data.
+
+```{r}
+RII_data <- RII_data %>% 
+  left_join(coordinates_data, by = "title")
+```
+
+## Soil Nitrogen: download and append data from the WorldClim database
+
+This script downloads soil nitrogen data for each pair of coordinates.
+
+It uses the SoilGrids 2.0 database: - Poggio, L., de Sousa, L.M.,
+Batjes, N.H., Heuvelink, G.B.M., Kempen, B., Ribeiro, E., & Rossiter, D.
+(2021). SoilGrids 2.0: producing soil information for the globe with
+quantified spatial uncertainty. Soil, 7, 217-240.
+<doi:10.5194/soil-7-217-2021>
+
+The data is retrieved using the `geodata` package: - Hijmans, R.J.,
+Barbosa, M., Ghosh, A., & Mandel, A. (2024). geodata: Download
+Geographic Data. R package version 0.6-2,
+<https://CRAN.R-project.org/package=geodata>.
+
+```{r}
+# WARNING! This chunk of code will download a large amount of data.
+
+# Download soil nitrogen data for each pair of coordinates
+library(geodata)
+
+# NOTE: uncomment the following lines to download the data
+
+# Nitrogen
+# soil_world(var = "nitrogen",
+#            depth = 5,
+#            path = "SoilData",
+#            long = RII_data$long,
+#            lat = RII_data$lat)
+```
+
+Append soil nitrogen data to the processed data.
+
+```{r}
+# Load soil nitrogen data
+library(terra)
+
+# Load the coordinates
+coord <- data.frame(RII_data$long, RII_data$lat)
+
+# Load the nitrogen data (downloaded with the previous chunk of code)
+path_to_nitrogen_data <- "~/SoilData/soil_world/nitrogen_0-5cm_mean_30s.tif"
+nitrogen_data <- rast(path_to_nitrogen_data)
+
+# Extract the nitrogen data for each pair of coordinates
+raw.soil_n <- extract(nitrogen_data, coord)
+
+# Append the nitrogen data to the processed data
+RII_data$soil_n <- raw.soil_n[, 2]
+
+# Remove unnecessary data
+rm(coord)
+rm(nitrogen_data)
+rm(raw.soil_n)
+```
+
+## Soil phosphorus (olsen P) from global database
+
+This is downloaded from:
+
+-   McDowell, R. W., Noble, A., Pletnyakov, P., & Haygarth, P. M.
+    (2023). A global database of soil plant available phosphorus.
+    *Scientific Data*, *10*(1), 125.
+
+We downloaded the database manually, so there is no script for that.
+
+```{r}
+library(terra)
+library(rgdal)
+library(sf)
+
+path_to_olsenP_data <- "~/SoilP_DB/OlsenP_mgkg-1_World_Aug2022_ver.tif"
+
+olsenP <- rast(path_to_olsenP_data)
+plot(olsenP)
+```
+
+First I need to convert my data from decimal coordinates to the same
+projection as the Olsen P raster.
+
+```{r}
+# Check raster projection
+crs(olsenP)
+```
+
+```{r}
+coords <- data.frame(dplyr::select(RII_data, long, lat))
+head(coords)
+```
+
+```{r}
+# Convert
+points <- st_as_sf(coords, coords = c("long", "lat"), crs = 4326) #4326 is for the decimal coordinates system
+points
+```
+
+Then transform the points to the projection used in the raster:
+
+```{r}
+points_proj <- st_transform(points, crs(olsenP))
+points_proj
+```
+
+Finally, extract the points.
+
+```{r}
+values <- extract(olsenP, vect(points_proj))
+head(values)
+```
+
+Add the soil P values to our dataset.
+
+```{r}
+RII_data$soil_phosphorus <- values$Band_1
+```
+
+## Aridity index from Global Aridity Index Database
+
+Extract the Aridity Index from the Global Aridity Index Database V3
+based on pairs of coordinates.
+
+Zomer, R.J., Xu, J., & Trabucco, A. (2022). Version 3 of the Global
+Aridity Index and Potential Evapotranspiration Database. Scientific
+Data, 9(409). <https://doi.org/10.1038/s41597-022-01493-1>
+
+The file ai_v3_yr.tif must be downloaded beforehand from the official
+repository: <https://doi.org/10.6084/m9.figshare.7504448.v5>
+
+```{r}
+library(terra)
+library(raster)
+
+# Path to Aridity Index tif file ("ai_v3_yr.tif")
+ai_tif <- "~/GlobalAridityIndex_v3/ai_v3_yr.tif"
+
+ai_raster <- rast(ai_tif)
+
+# Data needs to be corrected by multiplying it by 0.0001
+# See https://www.nature.com/articles/s41597-022-01493-1
+
+# NOTE: This may take a while
+corrected_ai <- ai_raster * 0.0001
+
+# Extract the Aridity Index (AI) for each pairs of coordinates in our dataset
+extracted_ai <- extract(corrected_ai, cbind(RII_data$long, RII_data$lat))
+RII_data$aridity_index <- extracted_ai$awi_pm_sr_yr
+```
+
+Finally, remove those places that are not arid environments:
+
+```{r}
+RII_data <- RII_data %>% 
+  filter(aridity_index < 0.65)
+```
+
+
+```{r}
+write_csv(RII_data, "../data/Giachetti_2025_full_raw.csv")
+```
+
+
+## Download precipitations and temperature from WorldClim
+
+Takes precipitations and temperature from WorldClim database for each
+pairs of coordinates. Computes the annual precipitations and the average
+temperature.
+
+-   Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial
+    resolution climate surfaces for global land areas. International
+    Journal of Climatology 37 (12) : 4302-4315.
+
+```{r}
+library(geodata)
+
+# NOTE! This will download a large amount of data. Don't run it unless you need it.
+
+
+# Download mean temperature
+# worldclim_global(var = "tavg",
+#                  res = 0.5,
+#                  path = "WorldClim",
+#                  long = RII_data$long,
+#                  lat = RII_data$lat)
+
+# Download Annual precipitations
+# worldclim_global(var = "prec",
+#                  res = 0.5,
+#                  path = "WorldClim",
+#                  long = RII_data$long,
+#                  lat = RII_data$lat)
+
+```
+
+The last code download 12 tif files for each variable, one per each
+month.
+
+We need the annual precipitations, thus the sum of the 12 values, and
+the average temperature, thus the mean of the 12 values.
+
+```{r}
+# Annual precipitation
+
+# List all monthly precipitation files
+prec_files <- list.files(
+  path = "WorldClim/climate/wc2.1_30s", 
+  pattern = "wc2.1_30s_prec*", 
+  full.names = TRUE
+)
+
+# Create a raster stack of precipitation data
+prec_stack <- rast(prec_files)
+# Extract the values
+prec_values <- extract(prec_stack, cbind(RII_data$long, RII_data$lat))
+
+RII_data$prec <- rowSums(prec_values)
+
+# ---------------------------------------------------------------
+# Average temperature
+
+# List all monthly average temperature files
+tavg_files <- list.files(
+  path = "WorldClim/climate/wc2.1_30s", 
+  pattern = "wc2.1_30s_tavg*", 
+  full.names = TRUE
+)
+
+# Create a raster stack of average temp data
+tavg_stack <- rast(tavg_files)
+
+# Extract the values
+tavg_values <- extract(tavg_stack, cbind(RII_data$long, RII_data$lat))
+
+RII_data$tavg <- rowMeans(tavg_values)
+```
+
+------------------------------------------------------------------------
+
+# Save processed data
+
+```{r}
+write.csv(RII_data, "../data/Giachetti_2025_processed.csv", row.names = FALSE)
+```

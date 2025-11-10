@@ -1,0 +1,169 @@
+---
+title: "7_MoreSensitivityAnalyses"
+author: "V. Giachetti and F. Decunta"
+date: "2025-08-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(metafor)
+library(patchwork)
+library(tidyverse)
+```
+
+# Additional sensitivity analyses
+
+This script adds a sensitivity analyses:
+
+Assume stronger correlation between observations from the same study. 
+To take into account non-independence between effect sizes from the same study, 
+we constructed approximate variance-covariance matrices. However, we assume 0.5
+correlation between effect sizes from the same study. Here, we assume a stronger
+correlation of 0.8.
+
+```{r}
+dat <- read_csv("../data/Giachetti_2025_processed.csv", show_col_types = FALSE) 
+```
+
+# Meta-regressions
+
+## Nitrogen 
+
+First, filter the database to keep cases with nitrogen measures.
+
+```{r}
+dat.nit <- dat %>% 
+    select(id_paper,
+           authors,
+           id_es,
+           id_site,
+           year,
+           nurse_species,
+           RII,
+           RIIV,
+           nit.RII,
+           nit.RIIV,
+           n_island,
+           n_bs,
+           n_island_fi,
+           n_bs_fi,
+           soil_n) %>% 
+  filter(!is.na(nit.RII))
+  
+dim(dat.nit)
+```
+
+### Facilitation strength vs Nitrogen RII 
+
+```{r}
+VCV <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.nit,
+             rho = 0.8)
+
+mod.nitRII <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.nit,
+                  test = "t",
+                  mods = ~ nit.RII)
+
+robust(mod.nitRII, cluster = dat.nit$id_paper)
+```
+
+### Facilitation strength vs Soil Nitrogen
+
+
+```{r}
+VCV <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.nit,
+             rho = 0.8)
+
+mod.soil_n <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.nit,
+                  test = "t",
+                  mods = ~ soil_n)
+
+robust(mod.soil_n, cluster = dat.nit$id_paper)
+```
+
+
+
+## Phosphorus 
+
+```{r}
+dat.phosphorus <- dat |>
+    select(id_paper,
+           id_es,
+           id_site,
+           authors,
+           year,
+           nurse_species,
+           RII,
+           RIIV,
+           p.RII,
+           p.RIIV,
+           n_island,
+           n_bs,
+           n_island_fi,
+           n_bs_fi,
+           soil_phosphorus) |>
+    filter(!is.na(p.RII), !is.na(RIIV))
+```
+
+
+
+### Facilitation strength vs Phosphorus RII
+
+
+```{r}
+VCV <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.phosphorus,
+             rho = 0.8)
+
+mod.p.RII <- rma.mv(yi = RII,
+                   V = VCV,
+                   random = list(~ 1 | id_es,
+                                 ~ 1 | id_paper),
+                   method = "REML",
+                   data = dat.phosphorus,
+                   test = "t",
+                   mods = ~ p.RII)
+
+robust(mod.p.RII, cluster = dat.phosphorus$id_paper)
+```
+
+### Facilitation strength vs Soil Phosphorus
+
+```{r}
+VCV <- vcalc(vi = RIIV, 
+             cluster = id_paper,  
+             obs = id_es, 
+             data = dat.phosphorus,
+             rho = 0.8)
+
+mod.soil_p <- rma.mv(yi = RII,
+                  V = VCV,
+                  random = list(~ 1 | id_es,
+                                ~ 1 | id_paper),
+                  method = "REML",
+                  data = dat.phosphorus,
+                  test = "t",
+                  mods = ~ soil_phosphorus)
+
+robust(mod.soil_p, cluster = dat.phosphorus$id_paper)
+```
+
+
